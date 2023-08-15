@@ -1,0 +1,57 @@
+1个directory里面有很多file，我们需要做的就是计算这个directory里面的word count。每隔一段时间会有一次get word count的操作，同时，会有新的file加进来。目标是尽量快的实现这个过程。
+初始思路：
+用一个map<string, long>来记录word count。在bootstrap的时候先扫描当前全部file，然后每次get word count的时候再扫描新的file。
+优化进程：
+1. 文件是sorted by timestamp，可以记录latest timestamp，在扫描新file的时候用类似binary search，直接跳到最新file的位置。
+2. 每个file是独立的，可以使用multi-threading来加速，‍‌‌‍‍‍‌‍‌‌‌‌‍‌‍‌‌‌‍‍但这设计到一个concurrency write的问题。最好有fine grained的数据结构，但如果没有的话可以用一个global lock解决。global lock比较coarse grained，所以尽量少call，反应到design上就是先做local word count，再把local word count merge到 global word count。
+3. system会crash，可以写中间结果到file里面，然后每次读file来bootstrap。另外的方案是写append-only log，然后每隔一段时间再merge log。
+4. 经常写中间结果到file会inefficient，可以记录一个new file count，只有当new file count超过一定的threshold之后才触发。
+5. 如果在写中间结果的中途system crash的话，可以自定义一个file terminator，然后读中间结果的时候检测有没有这个terminator，如果有，说明中间结果是正确的写完了的，如果没有则说明这个中间结果不完整，不能使用。
+
+
+
+#### 1. Initialization:
+Bootstrap Scanning:
+
+At the startup, you're proposing a one-time, initial scan of all the files to build an initial word count.
+This ensures that any subsequent operations only need to consider the changes or new files, rather than processing everything from scratch.
+
+#### 2. Handling New Files:
+Binary Search with Timestamp:
+
+Files being sorted by timestamp is a great advantage. This means, with every new file addition, you can use a binary search approach to quickly locate and process only newer files, rather than revisiting older ones.
+
+####3. Multithreading:
+Concurrency:
+
+Spawning a new thread for each file can indeed speed up the process.
+Concurrency Issues: Concurrent writes can cause data inconsistencies. To tackle this:
+Local Word Count: Each thread calculates its local word count without writing to the global map.
+Global Merge: Once local counts are ready, threads can then synchronize to update the global word count map. This reduces the contention for the global map.
+Locks: If you're updating the global map, you'd need synchronization mechanisms. Using a ReentrantReadWriteLock can offer some granularity as multiple threads can read concurrently, but writes are exclusive.
+
+####4. Robustness against Crashes:
+Intermediate Results:
+
+Saving intermediate results is crucial for recovery after a crash.
+Append-only log: A log that captures all updates (appends) means you can replay these logs to get back to the latest state of your word count.
+Periodic Merging: Over time, these logs can grow. Periodic compaction or merging can help reduce the log size.
+
+####5. Efficiency Considerations:
+Writing to File:
+
+Writing results to a file after every update can be I/O intensive. A threshold-based mechanism, where you write only after 'x' number of new files or 'y' volume of data, can alleviate this.
+A balance is needed, as waiting too long can risk loss of more data in case of a crash.
+File Terminator:
+
+The idea here is to maintain data integrity. By appending a special terminator at the end of the write operation, during recovery, you can ascertain whether the last write was complete or got interrupted. If interrupted, the last intermediate result can be ignored.
+Additional Thoughts:
+File Deletion/Modification: If files can be deleted or changed, you'd need to track these changes. This is because a mere addition of new words can be quickly appended to the global count, but deletions or changes mean you'd need to adjust or reprocess the file.
+
+Scalability: As the data grows, you might need to consider distributed systems. Frameworks like Hadoop's MapReduce can distribute the counting task across multiple machines.
+
+Memory Overhead: With numerous words, the global map can grow immensely. Consider using trie data structures or offloading to databases if memory consumption becomes an issue.
+
+Real-time Updates: Consider using file watch services which can notify your application of new file additions, ensuring almost real-time updates to the word count.
+
+By dissecting the solution in this manner, it is hoped that a clearer understanding of the components, their implications, and additional factors to consider are conveyed.
